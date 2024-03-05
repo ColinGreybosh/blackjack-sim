@@ -10,7 +10,7 @@ const DEALER_ID: u64 = 0xDEA1E4;
 
 enum State {
     Betting,
-    // Dealing,
+    Dealing,
     // Playing,
 }
 
@@ -20,7 +20,22 @@ struct Hands {
 
 impl Hands {
     fn new() -> Hands {
-        Hands { hands: vec![] }
+        Hands::from_vec(vec![])
+    }
+    fn from_vec(hands: Vec<Hand>) -> Hands {
+        Hands { hands }
+    }
+    fn add(&mut self, hand: Hand) {
+        self.hands.push(hand)
+    }
+}
+
+impl fmt::Display for Hands {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for hand in &self.hands {
+            write!(f, "{}", hand.to_string())?;
+        }
+        Ok(())
     }
 }
 
@@ -44,9 +59,8 @@ impl Game {
         let dealer_hands = Hands::new();
         player_hand_map.insert(dealer.id, dealer_hands);
         for player in &players {
-            let player_hands = Hands::new();
-            player_hand_map.insert(player.id, player_hands);
-            player_bets_map.insert(player.id, Bets::none());
+            player_hand_map.insert(player.id, Hands::new());
+            player_bets_map.insert(player.id, Bets::new());
         }
         Game {
             state: State::Betting,
@@ -65,20 +79,49 @@ impl Game {
                     self.player_bets_map.insert(player.id, bets);
                     player.bankroll_cents -= bet_total;
                 }
+                self.state = State::Dealing;
+            }
+            State::Dealing => {
+                // Players' first card
+                for player in &mut self.players {
+                    let bets = self
+                        .player_bets_map
+                        .get(&player.id)
+                        .expect("Player should have bet");
+                    let mut hands = Hands::new();
+                    for _i in 0..bets.count() {
+                        let mut hand = Hand::new();
+                        self.shoe.deal_to_hand(&mut hand, 1);
+                        hands.add(hand);
+                    }
+                    self.player_hand_map.insert(player.id, hands);
+                }
+
+                // Dealer's hole card
+                let mut dealer_hand = Hand::new();
+                self.shoe.deal_to_hand(&mut dealer_hand, 1);
+
+                // Players' second card
+                for player in &mut self.players {
+                    if let Some(hands) = self.player_hand_map.get_mut(&player.id) {
+                        for mut hand in hands.hands.iter_mut() {
+                            self.shoe.deal_to_hand(&mut hand, 1);
+                        }
+                    }
+                }
+
+                // Dealer's up card
+                self.shoe.deal_to_hand(&mut dealer_hand, 1);
+                let dealer_hands = Hands::from_vec(vec![dealer_hand]);
+                self.player_hand_map
+                    .insert(PlayerId(DEALER_ID), dealer_hands);
             }
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-
 struct PlayerId(u64);
-
-impl PlayerId {
-    fn from_u64(id: u64) -> PlayerId {
-        PlayerId(id)
-    }
-}
 
 impl fmt::Display for PlayerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -100,7 +143,7 @@ impl Strategy {
                 if bankroll_cents > MINIMUM_BET_CENTS {
                     Bets::from_vec(vec![MINIMUM_BET_CENTS])
                 } else {
-                    Bets::none()
+                    Bets::new()
                 }
             }
         }
@@ -112,14 +155,31 @@ struct Bets {
 }
 
 impl Bets {
-    fn none() -> Bets {
-        Bets { bets: vec![] }
+    fn new() -> Bets {
+        Bets::from_vec(vec![])
     }
     fn from_vec(bets: Vec<u64>) -> Bets {
-        Bets { bets }
+        let nonzero_bets = bets
+            .iter()
+            .filter(|&bet| *bet != 0 as u64)
+            .cloned()
+            .collect();
+        Bets { bets: nonzero_bets }
     }
     fn total(&self) -> u64 {
         self.bets.iter().sum()
+    }
+    fn count(&self) -> u64 {
+        self.bets.iter().filter(|&bet| *bet != 0u64).count() as u64
+    }
+}
+
+impl<'a> IntoIterator for &'a Bets {
+    type Item = &'a u64;
+    type IntoIter = std::slice::Iter<'a, u64>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.bets.iter()
     }
 }
 
@@ -133,14 +193,14 @@ struct Player {
 impl Player {
     fn new_dealer(id: u64, bankroll_cents: u64) -> Player {
         Player {
-            id: PlayerId::from_u64(id),
+            id: PlayerId(id),
             bankroll_cents,
             strategy: Strategy::Dealer,
         }
     }
     fn new_player(id: u64, bankroll_cents: u64, strategy: Strategy) -> Player {
         Player {
-            id: PlayerId::from_u64(id),
+            id: PlayerId(id),
             bankroll_cents,
             strategy,
         }
@@ -172,6 +232,16 @@ fn main() {
             None => continue,
         }
     }
+    println!("");
+    game.update();
+    for (player_id, hands) in game.player_hand_map.iter() {
+        let maybe_player = game.players.iter().find(|player| player.id.eq(player_id));
+        match maybe_player {
+            Some(_player) => println!("Player {player_id} has {} in their hand.", hands),
+            None => println!("Dealer has {} in their hand.", hands),
+        }
+    }
+
     // deal_shoes(game.shoe, 10);
 }
 
